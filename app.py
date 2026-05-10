@@ -142,7 +142,7 @@ st.markdown("""
 # ─── Data & Model Loading ─────────────────────────────────────────────────────
 @st.cache_data
 def load_data():
-    df = pd.read_csv("Student_Depression_Dataset.csv")
+    df = pd.read_csv("Student Depression Dataset.csv")
     return df
 
 @st.cache_resource
@@ -268,7 +268,7 @@ try:
     model_loaded = True
 except Exception as e:
     model_loaded = False
-    st.error(f"Gagal memuat dataset: {e}. Pastikan file `Student_Depression_Dataset.csv` ada di direktori yang sama.")
+    st.error(f"Gagal memuat dataset: {e}. Pastikan file `Student Depression Dataset.csv` ada di direktori yang sama.")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE 1 – Analisis Teks
