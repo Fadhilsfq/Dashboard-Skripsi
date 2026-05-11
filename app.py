@@ -184,7 +184,7 @@ def build_text_from_row(row) -> str:
 # ─── Load Data ─────────────────────────────────────────────────────────────────
 @st.cache_data
 def load_data():
-    return pd.read_csv("Student_Depression_Dataset.csv")
+    return pd.read_csv("Student Depression Dataset.csv")
 
 # ─── Train Text Model (TF-IDF + CatBoost + Optuna) ────────────────────────────
 @st.cache_resource
