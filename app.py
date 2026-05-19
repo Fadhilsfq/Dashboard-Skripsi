@@ -365,7 +365,7 @@ if page == "🔍 Analisis Teks":
     tfidf_v = st.session_state["tfidf_vec"]
     tm_acc  = st.session_state["tm_acc"]
 
-    mc1, mc2 = st.columns(3)
+    mc1, mc2 = st.columns(2)
     mc1.markdown(f"<div class='metric-card'><div class='metric-val'>{tm_acc*100:.1f}%</div><div class='metric-label'>Akurasi Model CatBoost + Bayesian Optimization</div></div>", unsafe_allow_html=True)
     mc2.markdown("<div class='metric-card'><div class='metric-val' style='font-size:1rem;'>CatBoost + Optuna</div><div class='metric-label'>Algoritma</div></div>", unsafe_allow_html=True)
 
