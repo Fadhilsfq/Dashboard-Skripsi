@@ -346,8 +346,8 @@ except Exception as e:
 if page == "🔍 Analisis Teks":
     st.markdown("""
     <div class='hero-banner'>
-        <p class='hero-title'>🧠 DepreScan</p>
-        <p class='hero-sub'>Deteksi Risiko Depresi dari Teks Bebas · CatBoost + Bayesian Optimization · 100% Offline</p>
+        <p class='hero-title'>DepreScan</p>
+        <p class='hero-sub'>Deteksi Risiko Depresi dari Teks · CatBoost + Bayesian Optimization </p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -365,10 +365,9 @@ if page == "🔍 Analisis Teks":
     tfidf_v = st.session_state["tfidf_vec"]
     tm_acc  = st.session_state["tm_acc"]
 
-    mc1, mc2, mc3 = st.columns(3)
-    mc1.markdown(f"<div class='metric-card'><div class='metric-val'>{tm_acc*100:.1f}%</div><div class='metric-label'>Akurasi Model Teks</div></div>", unsafe_allow_html=True)
+    mc1, mc2 = st.columns(3)
+    mc1.markdown(f"<div class='metric-card'><div class='metric-val'>{tm_acc*100:.1f}%</div><div class='metric-label'>Akurasi Model CatBoost + Bayesian Optimization</div></div>", unsafe_allow_html=True)
     mc2.markdown("<div class='metric-card'><div class='metric-val' style='font-size:1rem;'>CatBoost + Optuna</div><div class='metric-label'>Algoritma</div></div>", unsafe_allow_html=True)
-    mc3.markdown("<div class='metric-card'><div class='metric-val' style='font-size:1rem;'>100% Offline</div><div class='metric-label'>Tanpa API / Internet</div></div>", unsafe_allow_html=True)
 
     st.markdown("<div class='section-header' style='margin-top:1.2rem;'>Ceritakan perasaan Anda</div>", unsafe_allow_html=True)
 
@@ -394,12 +393,12 @@ if page == "🔍 Analisis Teks":
         <div class='metric-card'>
             <div class='metric-label'>Bahasa didukung</div>
             <div style='color:#7c83fd; font-weight:600; font-size:0.9rem; margin-top:0.3rem;'>
-                🇮🇩 Bahasa Indonesia<br>🇺🇸 English
+                Bahasa Indonesia<br>English
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-    st.markdown("**💡 Contoh ungkapan:**")
+    st.markdown("** Contoh ungkapan:**")
     ex_cols = st.columns(3)
     examples = [
         "ah capek banget, pengen istirahat selamanya",
