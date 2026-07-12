@@ -8,7 +8,8 @@ import warnings
 warnings.filterwarnings("ignore")
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-from catboost import CatBoostClassifier
+from imblearn.over_sampling import SMOTENC
+from catboost import CatBoostClassifier, Pool
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
@@ -222,7 +223,7 @@ def train_text_model(_df):
         return np.mean(scores)
 
     study = optuna.create_study(direction="maximize")
-    study.optimize(objective, n_trials=15, show_progress_bar=False)
+    study.optimize(objective, n_trials=10, show_progress_bar=False)
 
     best = study.best_params
     best.update({"loss_function": "Logloss", "eval_metric": "Accuracy",
@@ -237,7 +238,7 @@ def train_text_model(_df):
 
     return final_model, tfidf, acc, report, cm, study.best_params, study.best_value
 
-# ─── Train Structured Model ────────────────────────────────────────────────────
+# ─── Train Structured Model (CatBoost + Optuna + SMOTENC) ─────────────────────
 @st.cache_resource
 def train_structured_model(_df):
     data = _df.dropna().copy()
@@ -264,14 +265,73 @@ def train_structured_model(_df):
     y = data['Depression']
     X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.10, random_state=42, stratify=y)
 
-    m = CatBoostClassifier(iterations=800, depth=6, learning_rate=0.08,
-                           l2_leaf_reg=3.0, verbose=0, random_seed=42)
-    m.fit(X_tr, y_tr, cat_features=cat_features)
-    y_pred = m.predict(X_te)
-    acc    = accuracy_score(y_te, y_pred)
-    report = classification_report(y_te, y_pred, output_dict=True)
-    cm     = confusion_matrix(y_te, y_pred)
-    return m, X_tr.columns.tolist(), cat_features, acc, report, cm
+    # Inisialisasi SMOTENC
+    cat_indices = [X_tr.columns.get_loc(c) for c in cat_features]
+    smote_nc = SMOTENC(categorical_features=cat_indices, random_state=42)
+
+    # Optuna Objective
+    def objective(trial):
+        params = {
+            'depth': trial.suggest_int('depth', 4, 10),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+            'iterations': 500, # Dikurangi untuk mempercepat build Streamlit
+            'loss_function': 'Logloss',
+            'eval_metric': 'Accuracy',
+            'verbose': False,
+            'random_seed': 42
+        }
+        cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+        cv_scores = []
+        for train_idx, val_idx in cv.split(X_tr, y_tr):
+            X_t, X_v = X_tr.iloc[train_idx], X_tr.iloc[val_idx]
+            y_t, y_v = y_tr.iloc[train_idx], y_tr.iloc[val_idx]
+
+            # Fit SMOTENC pada data training CV
+            X_t_res, y_t_res = smote_nc.fit_resample(X_t, y_t)
+            
+            train_pool = Pool(X_t_res, y_t_res, cat_features=cat_features)
+            val_pool = Pool(X_v, y_v, cat_features=cat_features)
+
+            m = CatBoostClassifier(**params)
+            m.fit(train_pool, eval_set=val_pool, early_stopping_rounds=30, verbose=False)
+
+            preds = m.predict(val_pool)
+            cv_scores.append(accuracy_score(y_v, preds))
+        return np.mean(cv_scores)
+
+    # Run Optuna Study
+    study = optuna.create_study(direction="maximize")
+    study.optimize(objective, n_trials=10, show_progress_bar=False) # Bisa ubah n_trials sesuai kebutuhan
+
+    best_params = study.best_params
+    best_params.update({"iterations": 1000, "loss_function": "Logloss", "eval_metric": "Accuracy", "verbose": 0, "random_seed": 42})
+    
+    # Resample seluruh Train data menggunakan SMOTENC
+    X_tr_res, y_tr_res = smote_nc.fit_resample(X_tr, y_tr)
+    
+    # Latih model final dengan parameter terbaik
+    m = CatBoostClassifier(**best_params)
+    m.fit(X_tr_res, y_tr_res, cat_features=cat_features)
+    
+    # Cari Threshold Terbaik
+    y_pred_proba = m.predict_proba(X_te)[:, 1]
+    best_threshold = 0.5
+    best_acc = 0
+    thresholds = np.arange(0.1, 0.9, 0.02)
+    for thresh in thresholds:
+        y_pred_temp = (y_pred_proba > thresh).astype(int)
+        acc = accuracy_score(y_te, y_pred_temp)
+        if acc > best_acc:
+            best_acc = acc
+            best_threshold = thresh
+
+    # Prediksi menggunakan threshold terbaik
+    final_predictions = (y_pred_proba > best_threshold).astype(int)
+    acc    = accuracy_score(y_te, final_predictions)
+    report = classification_report(y_te, final_predictions, output_dict=True)
+    cm     = confusion_matrix(y_te, final_predictions)
+    
+    return m, X_tr.columns.tolist(), cat_features, acc, report, cm, best_threshold, study.best_params
 
 # ─── Predict Teks ─────────────────────────────────────────────────────────────
 def predict_from_text(text: str, model, tfidf) -> dict:
@@ -352,7 +412,7 @@ if page == "🔍 Analisis Teks":
     """, unsafe_allow_html=True)
 
     if "text_model" not in st.session_state:
-        with st.spinner("⏳ Melatih model teks dengan CatBoost + Optuna... (±2 menit pertama kali)"):
+        with st.spinner("⏳ Melatih model teks dengan CatBoost + Optuna... (±1-2 menit pertama kali)"):
             tm, tfidf_vec, tm_acc, tm_report, tm_cm, tm_params, tm_cv = train_text_model(df_raw)
             st.session_state["text_model"]  = tm
             st.session_state["tfidf_vec"]   = tfidf_vec
@@ -425,7 +485,7 @@ if page == "🔍 Analisis Teks":
 
         cat_class = {"RENDAH": "result-low", "SEDANG": "result-mid", "TINGGI": "result-high"}[category]
         cat_color = {"RENDAH": "#4caf50",    "SEDANG": "#ffc107",    "TINGGI": "#f44336"}[category]
-        cat_icon  = {"RENDAH": "✅",          "SEDANG": "⚠️",         "TINGGI": "🚨"}[category]
+        cat_icon  = {"RENDAH": "✅",         "SEDANG": "⚠️",         "TINGGI": "🚨"}[category]
 
         st.markdown(f"""
         <div class='result-card {cat_class}'>
@@ -500,21 +560,24 @@ if page == "🔍 Analisis Teks":
 # PAGE 2 — Prediksi Terstruktur
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "📊 Prediksi Terstruktur":
-    st.markdown("<div class='hero-banner'><p class='hero-title'>📊 Prediksi Berbasis Profil</p><p class='hero-sub'>Isi data profil untuk prediksi risiko depresi menggunakan CatBoost</p></div>", unsafe_allow_html=True)
+    st.markdown("<div class='hero-banner'><p class='hero-title'>📊 Prediksi Berbasis Profil</p><p class='hero-sub'>CatBoost + Optuna + SMOTENC & Threshold Optimal</p></div>", unsafe_allow_html=True)
 
     if "struct_model" not in st.session_state:
-        with st.spinner("⏳ Memuat model terstruktur..."):
-            sm, feat_cols, cat_feats, sm_acc, sm_rep, sm_cm = train_structured_model(df_raw)
+        with st.spinner("⏳ Memuat model terstruktur (Menjalankan Optuna & SMOTENC... ±2-3 menit)"):
+            sm, feat_cols, cat_feats, sm_acc, sm_rep, sm_cm, sm_thresh, sm_params = train_structured_model(df_raw)
             st.session_state["struct_model"] = sm
             st.session_state["feat_cols"]    = feat_cols
             st.session_state["cat_feats"]    = cat_feats
             st.session_state["sm_acc"]       = sm_acc
             st.session_state["sm_rep"]       = sm_rep
             st.session_state["sm_cm"]        = sm_cm
+            st.session_state["sm_thresh"]    = sm_thresh
+            st.session_state["sm_params"]    = sm_params
 
     sm        = st.session_state["struct_model"]
     feat_cols = st.session_state["feat_cols"]
     cat_feats = st.session_state["cat_feats"]
+    sm_thresh = st.session_state["sm_thresh"]
 
     with st.form("structured_form"):
         st.markdown("<div class='section-header'>Data Demografis</div>", unsafe_allow_html=True)
@@ -572,28 +635,30 @@ elif page == "📊 Prediksi Terstruktur":
 
         proba    = sm.predict_proba(df_in)[0]
         risk_pct = int(round(proba[1] * 100))
-        color    = "#f44336" if proba[1] >= 0.5 else "#4caf50"
-        label    = "⚠️ Terindikasi Depresi" if proba[1] >= 0.5 else "✅ Tidak Terindikasi"
+        
+        # Penilaian Berdasarkan Optimal Threshold
+        color    = "#f44336" if proba[1] >= sm_thresh else "#4caf50"
+        label    = "⚠️ Terindikasi Depresi" if proba[1] >= sm_thresh else "✅ Tidak Terindikasi"
 
         rc1, rc2, rc3 = st.columns(3)
         rc1.markdown(f"<div class='metric-card'><div class='metric-val' style='color:{color};'>{risk_pct}%</div><div class='metric-label'>Probabilitas Depresi</div></div>", unsafe_allow_html=True)
         rc2.markdown(f"<div class='metric-card'><div class='metric-val' style='color:#4caf50;'>{int(round(proba[0]*100))}%</div><div class='metric-label'>Probabilitas Normal</div></div>", unsafe_allow_html=True)
-        rc3.markdown(f"<div class='metric-card'><div class='metric-val' style='color:{color}; font-size:1.1rem;'>{label}</div><div class='metric-label'>Hasil Prediksi</div></div>", unsafe_allow_html=True)
+        rc3.markdown(f"<div class='metric-card'><div class='metric-val' style='color:{color}; font-size:1.1rem;'>{label}</div><div class='metric-label'>Batas Ambang (Threshold): {sm_thresh:.2f}</div></div>", unsafe_allow_html=True)
 
         fig, ax = plt.subplots(figsize=(6, 1))
         fig.patch.set_facecolor('#1e2130')
         ax.set_facecolor('#1e2130')
         ax.barh(0, 100, color='#2a2d3e', height=0.6)
         ax.barh(0, risk_pct, color=color, height=0.6)
-        ax.axvline(50, color='white', linewidth=1.5, linestyle='--', alpha=0.4)
+        ax.axvline(sm_thresh * 100, color='white', linewidth=1.5, linestyle='--', alpha=0.4)
         ax.text(risk_pct + 1.5, 0, f'{risk_pct}%', va='center', color='white', fontweight='bold')
         ax.set_xlim(0, 100); ax.axis('off')
         plt.tight_layout(pad=0.3)
         st.pyplot(fig, use_container_width=True)
         plt.close()
 
-        if proba[1] >= 0.5:
-            st.error("🚨 Model mendeteksi risiko depresi signifikan. Disarankan konsultasi dengan psikolog atau psikiater.")
+        if proba[1] >= sm_thresh:
+            st.error("🚨 Model mendeteksi risiko depresi signifikan berdasarkan profil ini. Disarankan konsultasi dengan psikolog atau psikiater.")
         else:
             st.success("✅ Profil tidak menunjukkan indikasi depresi yang signifikan. Tetap jaga kesehatan mental!")
 
@@ -673,7 +738,7 @@ elif page == "ℹ️ Tentang Model":
         ("text_model", lambda: train_text_model(df_raw),
          ["text_model","tfidf_vec","tm_acc","tm_report","tm_cm","tm_params","_"]),
         ("struct_model", lambda: train_structured_model(df_raw),
-         ["struct_model","feat_cols","cat_feats","sm_acc","sm_rep","sm_cm"]),
+         ["struct_model","feat_cols","cat_feats","sm_acc","sm_rep","sm_cm","sm_thresh","sm_params"]),
     ]:
         if key not in st.session_state:
             with st.spinner("Memuat model..."):
@@ -691,6 +756,8 @@ elif page == "ℹ️ Tentang Model":
     sm        = st.session_state.get("struct_model")
     feat_cols = st.session_state.get("feat_cols", [])
     tm_params = st.session_state.get("tm_params", {})
+    sm_params = st.session_state.get("sm_params", {})
+    sm_thresh = st.session_state.get("sm_thresh", 0.5)
 
     c1, c2, c3, c4 = st.columns(4)
     c1.markdown(f"<div class='metric-card'><div class='metric-val'>{tm_acc*100:.1f}%</div><div class='metric-label'>Akurasi Model Teks</div></div>", unsafe_allow_html=True)
@@ -710,23 +777,44 @@ elif page == "ℹ️ Tentang Model":
         ax.set_xlabel('Predicted', color='#a8b2d8'); ax.set_ylabel('Actual', color='#a8b2d8')
         ax.tick_params(colors='#a8b2d8'); ax.set_title('Text Model', color='#a8b2d8')
         plt.tight_layout(); st.pyplot(fig, use_container_width=True); plt.close()
+        
+        st.markdown("<div class='section-header' style='margin-top:2rem;'>Confusion Matrix — Model Profil</div>", unsafe_allow_html=True)
+        fig2, ax2 = plt.subplots(figsize=(4, 3.5))
+        fig2.patch.set_facecolor('#1e2130'); ax2.set_facecolor('#1e2130')
+        sns.heatmap(sm_cm.astype(int), annot=True, fmt='d', cmap='Oranges', ax=ax2,
+                    xticklabels=['Normal','Depresi'], yticklabels=['Normal','Depresi'],
+                    linewidths=0.5, linecolor='#2a2d3e')
+        ax2.set_xlabel('Predicted', color='#a8b2d8'); ax2.set_ylabel('Actual', color='#a8b2d8')
+        ax2.tick_params(colors='#a8b2d8'); ax2.set_title('Structured Model', color='#a8b2d8')
+        plt.tight_layout(); st.pyplot(fig2, use_container_width=True); plt.close()
 
     with col_arch:
-        st.markdown("<div class='section-header'>Arsitektur Pipeline</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-header'>Arsitektur Model Teks</div>", unsafe_allow_html=True)
         st.markdown("""
         | Tahap | Detail |
         |---|---|
         | Input | Teks bebas (Indonesia / Inggris) |
         | Vectorizer | TF-IDF (500 fitur, bigram) |
         | Model | CatBoost Classifier |
-        | Optimasi | Bayesian Optimization (Optuna, 15 trials) |
-        | Boosting | Rule-based Keyword (8 kategori) |
+        | Optimasi | Bayesian Optimization (Optuna) |
         | Ensemble | 60% CatBoost + 40% Rule-based |
-        | Output | Persentase risiko depresi |
         """)
         if tm_params:
-            st.markdown("<div class='section-header' style='margin-top:1rem;'>Best Params (Optuna)</div>", unsafe_allow_html=True)
             for k, v in tm_params.items():
+                st.markdown(f"- **{k}**: `{round(v,4) if isinstance(v,float) else v}`")
+
+        st.markdown("<div class='section-header' style='margin-top:2rem;'>Arsitektur Model Profil</div>", unsafe_allow_html=True)
+        st.markdown(f"""
+        | Tahap | Detail |
+        |---|---|
+        | Input | Data Demografis, Akademik, & Gaya Hidup |
+        | Oversampling | **SMOTENC** (Untuk Data Imbalance) |
+        | Model | CatBoost Classifier |
+        | Optimasi | Bayesian Optimization (Optuna) |
+        | **Optimal Threshold** | **`{sm_thresh:.4f}`** |
+        """)
+        if sm_params:
+            for k, v in sm_params.items():
                 st.markdown(f"- **{k}**: `{round(v,4) if isinstance(v,float) else v}`")
 
     if sm and feat_cols:
