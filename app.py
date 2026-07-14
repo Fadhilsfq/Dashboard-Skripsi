@@ -9,8 +9,7 @@ warnings.filterwarnings("ignore")
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 from catboost import CatBoostClassifier
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
@@ -47,10 +46,6 @@ st.markdown("""
         font-size: 1.15rem; font-weight: 600; color: #a8b2d8;
         border-left: 3px solid #7c83fd; padding-left: 0.75rem; margin-bottom: 1rem;
     }
-    .stTextArea textarea {
-        background: #1a1d2e !important; border: 1px solid #3a3d5e !important;
-        border-radius: 10px !important; color: #e0e6ff !important; font-size: 1rem !important;
-    }
     .stButton > button {
         background: linear-gradient(135deg, #7c83fd, #4facfe);
         color: white; border: none; border-radius: 10px;
@@ -63,179 +58,13 @@ st.markdown("""
         padding: 1rem; font-size: 0.82rem; color: #8892b0; margin-top: 1rem;
     }
     [data-testid="stSidebar"] { background: #13151f; border-right: 1px solid #1e2130; }
-    .keyword-tag {
-        display: inline-block; background: #2a2d4e; color: #a8b2d8;
-        border-radius: 20px; padding: 0.15rem 0.6rem; font-size: 0.8rem; margin: 0.15rem;
-        border: 1px solid #3a3d5e;
-    }
-    .keyword-tag.matched { background: #3d1515; color: #ff8080; border-color: #8b1a1a; }
 </style>
 """, unsafe_allow_html=True)
-
-# ─── Keyword Bank (Rule-based Boosting) ───────────────────────────────────────
-KEYWORD_BANK = {
-    "bunuh_diri": {
-        "keywords": ["bunuh diri", "ingin mati", "tidak mau hidup", "mengakhiri hidup",
-                     "mati saja", "lebih baik mati", "pengen mati", "mau mati",
-                     "suicide", "want to die", "end my life", "kill myself"],
-        "weight": 0.45, "label": "Pikiran Bunuh Diri"
-    },
-    "putus_asa": {
-        "keywords": ["tidak ada harapan", "putus asa", "hopeless", "sia-sia",
-                     "percuma", "tidak berguna", "worthless", "useless",
-                     "nggak ada gunanya", "hidup sia-sia", "nothing matters"],
-        "weight": 0.30, "label": "Putus Asa"
-    },
-    "kelelahan": {
-        "keywords": ["capek banget", "lelah", "exhausted", "burnout", "kelelahan",
-                     "tidak kuat", "tidak sanggup", "overwhelmed", "kewalahan",
-                     "sudah tidak bisa", "nggak kuat lagi", "so tired"],
-        "weight": 0.20, "label": "Kelelahan Ekstrem"
-    },
-    "kesepian": {
-        "keywords": ["sendirian", "lonely", "kesepian", "tidak ada yang peduli",
-                     "diabaikan", "alone", "no one cares", "tidak dipedulikan",
-                     "nggak ada yang ngerti", "feeling empty"],
-        "weight": 0.25, "label": "Kesepian"
-    },
-    "cemas": {
-        "keywords": ["cemas", "khawatir", "takut", "anxious", "anxiety",
-                     "panik", "panic", "gelisah", "was-was", "nervous"],
-        "weight": 0.15, "label": "Kecemasan"
-    },
-    "sedih": {
-        "keywords": ["sedih", "menangis", "nangis terus", "sad", "depressed",
-                     "depresi", "down", "murung", "galau", "heartbroken",
-                     "patah hati", "hancur"],
-        "weight": 0.20, "label": "Kesedihan"
-    },
-    "stres": {
-        "keywords": ["stres", "stress", "tertekan", "under pressure", "beban",
-                     "tekanan", "nggak tahan", "tidak tahan", "terbebani"],
-        "weight": 0.15, "label": "Stres"
-    },
-    "tidak_semangat": {
-        "keywords": ["malas", "tidak semangat", "nggak semangat", "demotivated",
-                     "apatis", "apathy", "numb", "mati rasa", "hampa",
-                     "kosong", "empty"],
-        "weight": 0.18, "label": "Tidak Semangat"
-    }
-}
-
-def rule_based_score(text: str):
-    text_lower = text.lower()
-    total_weight = 0.0
-    matched = []
-    for cat, info in KEYWORD_BANK.items():
-        for kw in info["keywords"]:
-            if kw in text_lower:
-                total_weight += info["weight"]
-                matched.append(info["label"])
-                break
-    score = min(total_weight / 1.0, 1.0)
-    return score, list(set(matched))
-
-# ─── Corpus Builder ────────────────────────────────────────────────────────────
-def build_text_from_row(row) -> str:
-    parts = []
-    ap = row['Academic Pressure']
-    if ap >= 4:   parts.append("tekanan akademik berat stres tugas menumpuk tidak sanggup menyerah")
-    elif ap >= 3: parts.append("cukup tertekan kuliah sulit beban akademik")
-    else:         parts.append("santai akademik tidak masalah nyaman belajar")
-
-    sleep = str(row['Sleep Duration'])
-    if 'Less than 5' in sleep:   parts.append("susah tidur insomnia begadang lelah kelelahan capek")
-    elif '5-6' in sleep:         parts.append("kurang tidur sering mengantuk lelah")
-    elif 'More than 8' in sleep: parts.append("tidur terus malas lesu tidak semangat apatis")
-    else:                         parts.append("tidur cukup istirahat baik segar")
-
-    if str(row['Have you ever had suicidal thoughts ?']).lower() == 'yes':
-        parts.append("pernah ingin bunuh diri tidak ada harapan mengakhiri hidup menyerah putus asa mati")
-    else:
-        parts.append("semangat tidak ingin menyakiti diri sendiri harapan positif")
-
-    fs = row['Financial Stress']
-    if fs >= 4:   parts.append("sangat kesulitan finansial tidak punya uang masalah ekonomi berat cemas uang")
-    elif fs >= 3: parts.append("khawatir keuangan agak kesulitan finansial")
-
-    ss = row['Study Satisfaction']
-    if ss <= 2:   parts.append("tidak puas gagal tidak berguna tidak berharga kecewa menyesal")
-    elif ss >= 4: parts.append("puas senang kemajuan belajar bangga prestasi")
-
-    diet = str(row['Dietary Habits'])
-    if diet == 'Unhealthy': parts.append("makan tidak teratur skip makan tidak peduli kesehatan")
-    elif diet == 'Healthy': parts.append("makan sehat teratur jaga kesehatan")
-
-    if str(row['Family History of Mental Illness']).lower() == 'yes':
-        parts.append("riwayat penyakit mental keluarga faktor genetik")
-
-    wp = row['Work Pressure']
-    if wp >= 4:   parts.append("burnout kelelahan kerja tidak kuat pekerjaan melelahkan")
-    elif wp >= 3: parts.append("tekanan kerja berat capek pekerjaan")
-
-    js = row['Job Satisfaction']
-    if js <= 2: parts.append("tidak puas kerja frustasi jenuh tidak nyaman")
-
-    wh = row.get('Work/Study Hours', 6)
-    if wh >= 10: parts.append("kerja terlalu lama jam panjang tidak ada waktu istirahat")
-
-    return " ".join(parts)
 
 # ─── Load Data ─────────────────────────────────────────────────────────────────
 @st.cache_data
 def load_data():
     return pd.read_csv("Student Depression Dataset.csv")
-
-# ─── Train Text Model (TF-IDF + CatBoost + Optuna) ────────────────────────────
-@st.cache_resource
-def train_text_model(_df):
-    data = _df.dropna().copy()
-    data['text'] = data.apply(build_text_from_row, axis=1)
-    X_text = data['text']
-    y      = data['Depression']
-
-    X_tr, X_te, y_tr, y_te = train_test_split(
-        X_text, y, test_size=0.10, random_state=42, stratify=y
-    )
-
-    tfidf    = TfidfVectorizer(max_features=500, ngram_range=(1, 2), sublinear_tf=True)
-    X_tr_vec = tfidf.fit_transform(X_tr).toarray().astype("float32")
-    X_te_vec = tfidf.transform(X_te).toarray().astype("float32")
-
-    def objective(trial):
-        params = {
-            "iterations":          trial.suggest_int("iterations", 300, 800),
-            "depth":               trial.suggest_int("depth", 4, 8),
-            "learning_rate":       trial.suggest_float("learning_rate", 0.05, 0.3, log=True),
-            "l2_leaf_reg":         trial.suggest_float("l2_leaf_reg", 1, 10),
-            "random_strength":     trial.suggest_float("random_strength", 1e-3, 5, log=True),
-            "bagging_temperature": trial.suggest_float("bagging_temperature", 0, 1),
-            "loss_function": "Logloss", "eval_metric": "Accuracy",
-            "verbose": False, "random_seed": 42
-        }
-        cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-        scores = []
-        for tr_idx, val_idx in cv.split(X_tr_vec, y_tr):
-            m = CatBoostClassifier(**params)
-            m.fit(X_tr_vec[tr_idx], y_tr.iloc[tr_idx])
-            scores.append(accuracy_score(y_tr.iloc[val_idx], m.predict(X_tr_vec[val_idx])))
-        return np.mean(scores)
-
-    study = optuna.create_study(direction="maximize")
-    study.optimize(objective, n_trials=15, show_progress_bar=False)
-
-    best = study.best_params
-    best.update({"loss_function": "Logloss", "eval_metric": "Accuracy",
-                 "verbose": 0, "random_seed": 42})
-    final_model = CatBoostClassifier(**best)
-    final_model.fit(X_tr_vec, y_tr)
-
-    y_pred = final_model.predict(X_te_vec)
-    acc    = accuracy_score(y_te, y_pred)
-    report = classification_report(y_te, y_pred, output_dict=True)
-    cm     = confusion_matrix(y_te, y_pred)
-
-    return final_model, tfidf, acc, report, cm, study.best_params, study.best_value
 
 # ─── Train Structured Model ────────────────────────────────────────────────────
 @st.cache_resource
@@ -265,61 +94,23 @@ def train_structured_model(_df):
     X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.10, random_state=42, stratify=y)
 
     m = CatBoostClassifier(iterations=800, depth=6, learning_rate=0.08,
-                           l2_leaf_reg=3.0, verbose=0, random_seed=42)
-    m.fit(X_tr, y_tr, cat_features=cat_features)
+                           l2_leaf_reg=3.0, verbose=0, random_seed=42, loss_function="Logloss")
+    # Tambahkan eval_set untuk mendapatkan metrik loss per epoch
+    m.fit(X_tr, y_tr, cat_features=cat_features, eval_set=(X_te, y_te), early_stopping_rounds=50)
+    
     y_pred = m.predict(X_te)
     acc    = accuracy_score(y_te, y_pred)
     report = classification_report(y_te, y_pred, output_dict=True)
     cm     = confusion_matrix(y_te, y_pred)
-    return m, X_tr.columns.tolist(), cat_features, acc, report, cm
-
-# ─── Predict Teks ─────────────────────────────────────────────────────────────
-def predict_from_text(text: str, model, tfidf) -> dict:
-    rule_score, matched_keywords = rule_based_score(text)
-    vec   = tfidf.transform([text]).toarray().astype("float32")
-    proba = model.predict_proba(vec)[0]
-    catboost_score = float(proba[1])
-
-    has_critical = any(
-        kw in text.lower()
-        for kw in ["bunuh diri", "ingin mati", "mati saja", "suicide", "want to die",
-                   "kill myself", "end my life", "tidak mau hidup", "mengakhiri hidup"]
-    )
-    if has_critical:
-        final_score = max(catboost_score * 0.5 + rule_score * 0.5, 0.80)
-    else:
-        final_score = catboost_score * 0.60 + rule_score * 0.40
-
-    final_score = min(max(final_score, 0.0), 1.0)
-    risk_pct    = int(round(final_score * 100))
-
-    if risk_pct >= 70:   category = "TINGGI"
-    elif risk_pct >= 35: category = "SEDANG"
-    else:                category = "RENDAH"
-
-    if category == "TINGGI":
-        rec = "Sangat disarankan untuk segera berbicara dengan psikolog atau psikiater. Hubungi hotline 119 ext 8."
-    elif category == "SEDANG":
-        rec = "Pertimbangkan untuk berbagi perasaan dengan orang terpercaya atau konsultan kesehatan mental."
-    else:
-        rec = "Kondisi terlihat baik. Tetap jaga kesehatan mental dengan istirahat cukup dan aktivitas positif."
-
-    return {
-        "risk_percentage":  risk_pct,
-        "category":         category,
-        "catboost_score":   round(catboost_score * 100, 1),
-        "rule_score":       round(rule_score * 100, 1),
-        "detected_signals": matched_keywords,
-        "recommendation":   rec,
-        "has_critical":     has_critical,
-    }
+    eval_res = m.evals_result_
+    
+    return m, X_tr.columns.tolist(), cat_features, acc, report, cm, eval_res
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 🧠 DepreScan")
     st.markdown("---")
     page = st.radio("Navigasi", [
-        "🔍 Analisis Teks",
         "📊 Prediksi Terstruktur",
         "📈 Eksplorasi Data",
         "ℹ️ Tentang Model"
@@ -340,177 +131,23 @@ except Exception as e:
     st.error(f"Gagal memuat dataset: {e}. Pastikan `Student_Depression_Dataset.csv` ada di folder yang sama.")
     st.stop()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGE 1 — Analisis Teks
-# ══════════════════════════════════════════════════════════════════════════════
-if page == "🔍 Analisis Teks":
-    st.markdown("""
-    <div class='hero-banner'>
-        <p class='hero-title'>DepreScan</p>
-        <p class='hero-sub'>Deteksi Risiko Depresi dari Teks · CatBoost + Bayesian Optimization </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    if "text_model" not in st.session_state:
-        with st.spinner("⏳ Melatih model teks dengan CatBoost + Optuna... (±2 menit pertama kali)"):
-            tm, tfidf_vec, tm_acc, tm_report, tm_cm, tm_params, tm_cv = train_text_model(df_raw)
-            st.session_state["text_model"]  = tm
-            st.session_state["tfidf_vec"]   = tfidf_vec
-            st.session_state["tm_acc"]      = tm_acc
-            st.session_state["tm_report"]   = tm_report
-            st.session_state["tm_cm"]       = tm_cm
-            st.session_state["tm_params"]   = tm_params
-
-    tm      = st.session_state["text_model"]
-    tfidf_v = st.session_state["tfidf_vec"]
-    tm_acc  = st.session_state["tm_acc"]
-
-    mc1, mc2 = st.columns(2)
-    mc1.markdown(f"<div class='metric-card'><div class='metric-val'>{tm_acc*100:.1f}%</div><div class='metric-label'>Akurasi Model CatBoost + Bayesian Optimization</div></div>", unsafe_allow_html=True)
-    mc2.markdown("<div class='metric-card'><div class='metric-val' style='font-size:1rem;'>CatBoost + Optuna</div><div class='metric-label'>Algoritma</div></div>", unsafe_allow_html=True)
-
-    st.markdown("<div class='section-header' style='margin-top:1.2rem;'>Ceritakan perasaan Anda</div>", unsafe_allow_html=True)
-
-    col_input, col_info = st.columns([2, 1])
-    with col_input:
-        user_text = st.text_area(
-            "",
-            placeholder='Ketik perasaan Anda...\nContoh: "ah capek banget, rasanya udah nggak ada harapan"\natau "I feel so hopeless and exhausted"',
-            height=180,
-            label_visibility="collapsed",
-            key="main_text_input"
-        )
-        analyze_btn = st.button("🔍 Analisis Sekarang", use_container_width=True)
-
-    with col_info:
-        st.markdown("""
-        <div class='metric-card'>
-            <div class='metric-label'>Metode Analisis</div>
-            <div style='color:#7c83fd; font-weight:600; font-size:0.9rem; margin-top:0.3rem;'>
-                TF-IDF Vectorizer<br>+ CatBoost Classifier<br>+ Bayesian Optimization<br>+ Rule-based Boosting
-            </div>
-        </div>
-        <div class='metric-card'>
-            <div class='metric-label'>Bahasa didukung</div>
-            <div style='color:#7c83fd; font-weight:600; font-size:0.9rem; margin-top:0.3rem;'>
-                Bahasa Indonesia<br>English
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("** Contoh ungkapan:**")
-    ex_cols = st.columns(3)
-    examples = [
-        "ah capek banget, pengen istirahat selamanya",
-        "udah nggak tau mau ngapain lagi hidupku, hampa",
-        "ingin bunuh diri, rasanya semua sia-sia"
-    ]
-    for i, ex in enumerate(examples):
-        with ex_cols[i]:
-            if st.button(f'"{ex[:28]}..."', key=f"ex_{i}"):
-                st.session_state["injected_text"] = ex
-
-    if "injected_text" in st.session_state:
-        user_text   = st.session_state.pop("injected_text")
-        analyze_btn = True
-
-    if analyze_btn and user_text and user_text.strip():
-        result     = predict_from_text(user_text.strip(), tm, tfidf_v)
-        risk_pct   = result["risk_percentage"]
-        category   = result["category"]
-        signals    = result["detected_signals"]
-        rec        = result["recommendation"]
-        cb_score   = result["catboost_score"]
-        rule_score = result["rule_score"]
-
-        cat_class = {"RENDAH": "result-low", "SEDANG": "result-mid", "TINGGI": "result-high"}[category]
-        cat_color = {"RENDAH": "#4caf50",    "SEDANG": "#ffc107",    "TINGGI": "#f44336"}[category]
-        cat_icon  = {"RENDAH": "✅",          "SEDANG": "⚠️",         "TINGGI": "🚨"}[category]
-
-        st.markdown(f"""
-        <div class='result-card {cat_class}'>
-            <div style='display:flex; justify-content:space-between; align-items:center;'>
-                <div>
-                    <span style='font-size:2.2rem; font-weight:700; color:{cat_color};'>{risk_pct}%</span>
-                    <span style='color:#8892b0; margin-left:0.5rem;'>Risiko Depresi</span>
-                </div>
-                <div style='font-size:2.8rem;'>{cat_icon}</div>
-            </div>
-            <div style='margin-top:0.8rem;'>
-                <span style='background:{cat_color}33; color:{cat_color}; padding:0.25rem 1rem;
-                     border-radius:20px; font-weight:600;'>{category}</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        r1, r2, r3 = st.columns(3)
-        r1.markdown(f"<div class='metric-card'><div class='metric-val' style='color:{cat_color};'>{risk_pct}%</div><div class='metric-label'>Skor Final (Ensemble)</div></div>", unsafe_allow_html=True)
-        r2.markdown(f"<div class='metric-card'><div class='metric-val'>{cb_score}%</div><div class='metric-label'>CatBoost Score</div></div>", unsafe_allow_html=True)
-        r3.markdown(f"<div class='metric-card'><div class='metric-val'>{rule_score}%</div><div class='metric-label'>Rule-based Score</div></div>", unsafe_allow_html=True)
-
-        fig, ax = plt.subplots(figsize=(6, 0.9))
-        fig.patch.set_facecolor('#1e2130')
-        ax.set_facecolor('#1e2130')
-        ax.barh(0, 100, color='#2a2d3e', height=0.6)
-        ax.barh(0, risk_pct, color=cat_color, height=0.6)
-        ax.axvline(35, color='#ffc107', linewidth=1, linestyle='--', alpha=0.6)
-        ax.axvline(70, color='#f44336', linewidth=1, linestyle='--', alpha=0.6)
-        ax.text(17, -0.55, 'RENDAH', color='#4caf50', fontsize=7, ha='center')
-        ax.text(52, -0.55, 'SEDANG', color='#ffc107', fontsize=7, ha='center')
-        ax.text(85, -0.55, 'TINGGI', color='#f44336', fontsize=7, ha='center')
-        ax.set_xlim(0, 100); ax.axis('off')
-        plt.tight_layout(pad=0.2)
-        st.pyplot(fig, use_container_width=True)
-        plt.close()
-
-        col_sig, col_rec = st.columns(2)
-        with col_sig:
-            st.markdown("**🔍 Sinyal yang Terdeteksi:**")
-            if signals:
-                tags = "".join([f"<span class='keyword-tag matched'>{s}</span>" for s in signals])
-                st.markdown(tags, unsafe_allow_html=True)
-            else:
-                st.markdown("<span class='keyword-tag'>Tidak ada sinyal kritis</span>", unsafe_allow_html=True)
-        with col_rec:
-            st.markdown(f"""
-            <div style='background:#1a2030; border-left:3px solid #7c83fd;
-                  padding:1rem; border-radius:0 10px 10px 0;'>
-                <b style='color:#a8b2d8;'>💡 Rekomendasi</b><br>
-                <span style='color:#ccd6f6; font-size:0.9rem;'>{rec}</span>
-            </div>
-            """, unsafe_allow_html=True)
-
-        if category == "TINGGI":
-            st.error("🚨 **Perhatian Serius:** Risiko depresi tinggi terdeteksi. Segera hubungi **119 ext 8** (Kemenkes RI) atau **1500-454** (Into The Light Indonesia).")
-        elif category == "SEDANG":
-            st.warning("⚠️ Terdeteksi beberapa tanda yang perlu diperhatikan. Pertimbangkan berbicara dengan orang terpercaya atau profesional.")
-
-    elif analyze_btn:
-        st.info("Silakan masukkan teks terlebih dahulu.")
-
-    st.markdown("""
-    <div class='disclaimer'>
-        ⚠️ <b>Disclaimer:</b> Analisis ini bersifat informatif menggunakan model machine learning
-        dan tidak menggantikan diagnosis medis profesional. Selalu konsultasikan kondisi Anda dengan tenaga profesional.
-    </div>
-    """, unsafe_allow_html=True)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 2 — Prediksi Terstruktur
+# PAGE 1 — Prediksi Terstruktur
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "📊 Prediksi Terstruktur":
+if page == "📊 Prediksi Terstruktur":
     st.markdown("<div class='hero-banner'><p class='hero-title'>📊 Prediksi Berbasis Profil</p><p class='hero-sub'>Isi data profil untuk prediksi risiko depresi menggunakan CatBoost</p></div>", unsafe_allow_html=True)
 
     if "struct_model" not in st.session_state:
         with st.spinner("⏳ Memuat model terstruktur..."):
-            sm, feat_cols, cat_feats, sm_acc, sm_rep, sm_cm = train_structured_model(df_raw)
+            sm, feat_cols, cat_feats, sm_acc, sm_rep, sm_cm, evals_res = train_structured_model(df_raw)
             st.session_state["struct_model"] = sm
             st.session_state["feat_cols"]    = feat_cols
             st.session_state["cat_feats"]    = cat_feats
             st.session_state["sm_acc"]       = sm_acc
             st.session_state["sm_rep"]       = sm_rep
             st.session_state["sm_cm"]        = sm_cm
+            st.session_state["evals_res"]    = evals_res
 
     sm        = st.session_state["struct_model"]
     feat_cols = st.session_state["feat_cols"]
@@ -599,7 +236,7 @@ elif page == "📊 Prediksi Terstruktur":
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 3 — Eksplorasi Data
+# PAGE 2 — Eksplorasi Data
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "📈 Eksplorasi Data":
     st.markdown("<div class='hero-banner'><p class='hero-title'>📈 Eksplorasi Dataset</p><p class='hero-sub'>Student Depression Dataset — Visualisasi & Statistik</p></div>", unsafe_allow_html=True)
@@ -664,90 +301,113 @@ elif page == "📈 Eksplorasi Data":
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 4 — Tentang Model
+# PAGE 3 — Tentang Model
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "ℹ️ Tentang Model":
     st.markdown("<div class='hero-banner'><p class='hero-title'>ℹ️ Tentang Model</p><p class='hero-sub'>Arsitektur Pipeline, Performa & Metodologi</p></div>", unsafe_allow_html=True)
 
-    for key, loader, keys_out in [
-        ("text_model", lambda: train_text_model(df_raw),
-         ["text_model","tfidf_vec","tm_acc","tm_report","tm_cm","tm_params","_"]),
-        ("struct_model", lambda: train_structured_model(df_raw),
-         ["struct_model","feat_cols","cat_feats","sm_acc","sm_rep","sm_cm"]),
-    ]:
-        if key not in st.session_state:
-            with st.spinner("Memuat model..."):
-                results = loader()
-                for k, v in zip(keys_out, results):
-                    if k != "_":
-                        st.session_state[k] = v
+    if "struct_model" not in st.session_state:
+        with st.spinner("Memuat model..."):
+            sm, feat_cols, cat_feats, sm_acc, sm_rep, sm_cm, evals_res = train_structured_model(df_raw)
+            st.session_state["struct_model"] = sm
+            st.session_state["feat_cols"]    = feat_cols
+            st.session_state["cat_feats"]    = cat_feats
+            st.session_state["sm_acc"]       = sm_acc
+            st.session_state["sm_rep"]       = sm_rep
+            st.session_state["sm_cm"]        = sm_cm
+            st.session_state["evals_res"]    = evals_res
 
-    tm_acc    = st.session_state.get("tm_acc", 0)
-    sm_acc    = st.session_state.get("sm_acc", 0)
-    tm_report = st.session_state.get("tm_report", {})
-    sm_rep    = st.session_state.get("sm_rep", {})
-    tm_cm     = st.session_state.get("tm_cm", np.zeros((2,2)))
-    sm_cm     = st.session_state.get("sm_cm", np.zeros((2,2)))
     sm        = st.session_state.get("struct_model")
+    sm_acc    = st.session_state.get("sm_acc", 0)
+    sm_rep    = st.session_state.get("sm_rep", {})
+    sm_cm     = st.session_state.get("sm_cm", np.zeros((2,2)))
     feat_cols = st.session_state.get("feat_cols", [])
-    tm_params = st.session_state.get("tm_params", {})
+    evals_res = st.session_state.get("evals_res", {})
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(f"<div class='metric-card'><div class='metric-val'>{tm_acc*100:.1f}%</div><div class='metric-label'>Akurasi Model Teks</div></div>", unsafe_allow_html=True)
-    c2.markdown(f"<div class='metric-card'><div class='metric-val'>{sm_acc*100:.1f}%</div><div class='metric-label'>Akurasi Model Profil</div></div>", unsafe_allow_html=True)
-    c3.markdown(f"<div class='metric-card'><div class='metric-val'>{tm_report.get('1',{}).get('f1-score',0):.3f}</div><div class='metric-label'>F1 Model Teks</div></div>", unsafe_allow_html=True)
-    c4.markdown(f"<div class='metric-card'><div class='metric-val'>{sm_rep.get('1',{}).get('f1-score',0):.3f}</div><div class='metric-label'>F1 Model Profil</div></div>", unsafe_allow_html=True)
+    c1.markdown(f"<div class='metric-card'><div class='metric-val'>{sm_acc*100:.1f}%</div><div class='metric-label'>Akurasi Model</div></div>", unsafe_allow_html=True)
+    c2.markdown(f"<div class='metric-card'><div class='metric-val'>{sm_rep.get('macro avg',{}).get('precision',0)*100:.1f}%</div><div class='metric-label'>Precision (Macro)</div></div>", unsafe_allow_html=True)
+    c3.markdown(f"<div class='metric-card'><div class='metric-val'>{sm_rep.get('macro avg',{}).get('recall',0)*100:.1f}%</div><div class='metric-label'>Recall (Macro)</div></div>", unsafe_allow_html=True)
+    c4.markdown(f"<div class='metric-card'><div class='metric-val'>{sm_rep.get('macro avg',{}).get('f1-score',0)*100:.1f}%</div><div class='metric-label'>F1-Score (Macro)</div></div>", unsafe_allow_html=True)
 
     st.markdown("---")
+    
+    # Visualisasi Kurva Loss & Bar Chart Metrik
+    col_loss, col_metric = st.columns(2)
+    
+    with col_loss:
+        st.markdown("<div class='section-header'>Grafik Kurva Loss (Training vs Validasi)</div>", unsafe_allow_html=True)
+        if evals_res:
+            try:
+                train_loss = evals_res['learn']['Logloss']
+                val_key = list(evals_res.keys())[1] if 'validation' not in evals_res else 'validation'
+                val_loss = evals_res[val_key]['Logloss']
+                epochs = range(1, len(train_loss) + 1)
+
+                fig_loss, ax_loss = plt.subplots(figsize=(6, 4))
+                fig_loss.patch.set_facecolor('#1e2130')
+                ax_loss.set_facecolor('#1e2130')
+                ax_loss.plot(epochs, train_loss, label='Train Loss', color='#4facfe', linewidth=2)
+                ax_loss.plot(epochs, val_loss, label='Validation Loss', color='#f44336', linewidth=2)
+                ax_loss.set_xlabel('Iterations', color='#a8b2d8')
+                ax_loss.set_ylabel('Logloss', color='#a8b2d8')
+                ax_loss.tick_params(colors='#a8b2d8')
+                ax_loss.spines[:].set_color('#2a2d3e')
+                ax_loss.legend(facecolor='#2a2d3e', labelcolor='white')
+                plt.tight_layout()
+                st.pyplot(fig_loss, use_container_width=True)
+                plt.close()
+            except Exception as e:
+                st.warning(f"Kurva loss tidak tersedia: {e}")
+                
+    with col_metric:
+        st.markdown("<div class='section-header'>Barchart Perbandingan Metrik Akhir</div>", unsafe_allow_html=True)
+        metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
+        scores = [
+            sm_acc,
+            sm_rep.get('macro avg', {}).get('precision', 0),
+            sm_rep.get('macro avg', {}).get('recall', 0),
+            sm_rep.get('macro avg', {}).get('f1-score', 0)
+        ]
+
+        fig_metric, ax_metric = plt.subplots(figsize=(6, 4))
+        fig_metric.patch.set_facecolor('#1e2130')
+        ax_metric.set_facecolor('#1e2130')
+        bars = ax_metric.bar(metrics, scores, color=['#4facfe', '#7c83fd', '#4caf50', '#f44336'])
+        ax_metric.set_ylim(0, 1.1)
+        ax_metric.set_ylabel('Score', color='#a8b2d8')
+        ax_metric.tick_params(colors='#a8b2d8')
+        ax_metric.spines[:].set_color('#2a2d3e')
+
+        for bar in bars:
+            height = bar.get_height()
+            ax_metric.annotate(f'{height:.3f}', xy=(bar.get_x() + bar.get_width() / 2, height),
+                               xytext=(0, 5), textcoords="offset points", ha='center', color='white', fontweight='bold')
+
+        plt.tight_layout()
+        st.pyplot(fig_metric, use_container_width=True)
+        plt.close()
+
+    st.markdown("---")
+
     col_cm, col_arch = st.columns(2)
     with col_cm:
-        st.markdown("<div class='section-header'>Confusion Matrix — Model Teks</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-header'>Confusion Matrix — Model Prediksi</div>", unsafe_allow_html=True)
         fig, ax = plt.subplots(figsize=(4, 3.5))
         fig.patch.set_facecolor('#1e2130'); ax.set_facecolor('#1e2130')
-        sns.heatmap(tm_cm.astype(int), annot=True, fmt='d', cmap='Blues', ax=ax,
+        sns.heatmap(sm_cm.astype(int), annot=True, fmt='d', cmap='Blues', ax=ax,
                     xticklabels=['Normal','Depresi'], yticklabels=['Normal','Depresi'],
                     linewidths=0.5, linecolor='#2a2d3e')
         ax.set_xlabel('Predicted', color='#a8b2d8'); ax.set_ylabel('Actual', color='#a8b2d8')
-        ax.tick_params(colors='#a8b2d8'); ax.set_title('Text Model', color='#a8b2d8')
+        ax.tick_params(colors='#a8b2d8'); ax.set_title('CatBoost Structured Model', color='#a8b2d8')
         plt.tight_layout(); st.pyplot(fig, use_container_width=True); plt.close()
 
     with col_arch:
-        st.markdown("<div class='section-header'>Arsitektur Pipeline</div>", unsafe_allow_html=True)
-        st.markdown("""
-        | Tahap | Detail |
-        |---|---|
-        | Input | Teks bebas (Indonesia / Inggris) |
-        | Vectorizer | TF-IDF (500 fitur, bigram) |
-        | Model | CatBoost Classifier |
-        | Optimasi | Bayesian Optimization (Optuna, 15 trials) |
-        | Boosting | Rule-based Keyword (8 kategori) |
-        | Ensemble | 60% CatBoost + 40% Rule-based |
-        | Output | Persentase risiko depresi |
-        """)
-        if tm_params:
-            st.markdown("<div class='section-header' style='margin-top:1rem;'>Best Params (Optuna)</div>", unsafe_allow_html=True)
-            for k, v in tm_params.items():
-                st.markdown(f"- **{k}**: `{round(v,4) if isinstance(v,float) else v}`")
-
-    if sm and feat_cols:
-        st.markdown("<div class='section-header'>Feature Importance — Model Profil (Top 15)</div>", unsafe_allow_html=True)
-        fi = pd.Series(sm.get_feature_importance(), index=feat_cols).sort_values(ascending=True).tail(15)
-        fig, ax = plt.subplots(figsize=(8, 4))
-        fig.patch.set_facecolor('#1e2130'); ax.set_facecolor('#1e2130')
-        ax.barh(fi.index, fi.values, color=['#4facfe' if v >= fi.max()*0.7 else '#7c83fd' for v in fi.values])
-        ax.tick_params(colors='#a8b2d8', labelsize=9); ax.spines[:].set_color('#2a2d3e')
-        ax.set_title('Feature Importance (Structured Model)', color='#a8b2d8')
-        plt.tight_layout(); st.pyplot(fig, use_container_width=True); plt.close()
-
-    st.markdown("<div class='section-header'>Keyword Bank (Rule-based, 8 Kategori)</div>", unsafe_allow_html=True)
-    kb_cols = st.columns(4)
-    for i, (cat, info) in enumerate(KEYWORD_BANK.items()):
-        with kb_cols[i % 4]:
-            kw_tags = "".join([f"<span class='keyword-tag'>{kw}</span>" for kw in info['keywords'][:3]])
-            st.markdown(f"""
-            <div class='metric-card'>
-                <div style='color:#7c83fd; font-weight:600;'>{info['label']}</div>
-                <div style='color:#8892b0; font-size:0.75rem; margin-top:0.2rem;'>Bobot: {info['weight']}</div>
-                <div style='margin-top:0.4rem;'>{kw_tags}</div>
-            </div>
-            """, unsafe_allow_html=True)
+        if sm and feat_cols:
+            st.markdown("<div class='section-header'>Feature Importance (Top 10)</div>", unsafe_allow_html=True)
+            fi = pd.Series(sm.get_feature_importance(), index=feat_cols).sort_values(ascending=True).tail(10)
+            fig, ax = plt.subplots(figsize=(6, 4))
+            fig.patch.set_facecolor('#1e2130'); ax.set_facecolor('#1e2130')
+            ax.barh(fi.index, fi.values, color=['#4facfe' if v >= fi.max()*0.7 else '#7c83fd' for v in fi.values])
+            ax.tick_params(colors='#a8b2d8', labelsize=9); ax.spines[:].set_color('#2a2d3e')
+            plt.tight_layout(); st.pyplot(fig, use_container_width=True); plt.close()
